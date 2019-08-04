@@ -1,0 +1,615 @@
+---
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+
+Loading libraries
+```{r}
+
+options(warn=-1)
+
+if("caret" %in% rownames(installed.packages()) == FALSE) {install.packages("caret")} else{library(caret)}
+if("lubridate" %in% rownames(installed.packages()) == FALSE) {install.packages("lubridate")} else{library(lubridate)}
+if("data.table" %in% rownames(installed.packages()) == FALSE) {install.packages("data.table")} else{library(data.table)}
+if("tools" %in% rownames(installed.packages()) == FALSE) {install.packages("tools")} else{library(tools)}
+if("itertools" %in% rownames(installed.packages()) == FALSE) {install.packages("itertools")} else{library(itertools)}
+if("comprehenr" %in% rownames(installed.packages()) == FALSE) {install.packages("comprehenr")} else{library(comprehenr)}
+if("imager" %in% rownames(installed.packages()) == FALSE) {install.packages("imager")} else{library(imager)}
+if("mice" %in% rownames(installed.packages()) == FALSE) {install.packages("mice")} else{library(mice)}
+if("tidyverse" %in% rownames(installed.packages()) == FALSE) {install.packages("tidyverse")} else{library(tidyverse)}
+if("iterators" %in% rownames(installed.packages()) == FALSE) {install.packages("iterators")} else{library(iterators)}
+if("foreach" %in% rownames(installed.packages()) == FALSE) {install.packages("foreach")} else{library(foreach)}
+if("OpenImageR" %in% rownames(installed.packages()) == FALSE) {install.packages("OpenImageR")} else{library(OpenImageR)}
+if("magick" %in% rownames(installed.packages()) == FALSE) {install.packages("magick")} else{library(magick)}
+if("stats" %in% rownames(installed.packages()) == FALSE) {install.packages("stats")} else{library(stats)}
+if("abind" %in% rownames(installed.packages()) == FALSE) {install.packages("abind")} else{library(abind)}
+if("keras" %in% rownames(installed.packages()) == FALSE) {install.packages("keras")} else{library(keras)}
+if("e1071" %in% rownames(installed.packages()) == FALSE) {install.packages("e1071")} else{library(e1071)}
+if("hash" %in% rownames(installed.packages()) == FALSE) {install.packages("hash")} else{library(hash)}
+if("reshape2" %in% rownames(installed.packages()) == FALSE) {install.packages("reshape2")} else{library(reshape2)}
+
+
+library(caret)
+library(lubridate)
+library(data.table)
+library(tools)
+library(itertools)
+library(comprehenr)
+library(mice)
+library(imager)
+library(tidyverse)
+library(iterators)
+library(foreach)
+library(OpenImageR)
+library(magick)
+library(stats)
+library(abind)
+library(keras)
+library(e1071)
+library(imager)
+library(hash)
+library(data.table)
+library(reshape2)
+library(rmarkdown)
+
+render("Magnetronsolar.Rmd", "pdf_document")
+
+getwd()
+
+```
+
+
+
+Setting base path
+```{r}
+#base_path <- "F:/SUMMER'19/SUBJECTS/ADV BA WITH R/project"
+base_path <- "C:/Users/Vick/Downloads/sdobenchmark/solar_data"
+
+# Set the path where training and test folders are located
+```
+
+
+
+
+Conversion functions
+```{r}
+
+
+
+
+goes_classes <- c('quite', 'A', 'B', 'C', 'M', 'X') ## Classes of flux
+
+flux_to_class <- function(f, only_main){    ## This function converts flux to a particular class
+    decade <- f %>% log(10) %>% floor() %>% min(-4) %>% as.integer()
+    sub <- round(10^(-decade) * f)
+
+    
+    if (decade < -4) {decade <- decade + (sub %/% 10)
+    sub <- max(sub %% 10, 1)}  
+    if (decade >= -8) {main_class <- goes_classes[decade + 10]}else{main_class <- 'quiet'}
+    
+    
+    if ((main_class != 'quiet') & only_main != TRUE) {sub_class <- as.character(sub)}else{sub_class <- ''}
+    
+    return(paste(main_class,sub_class, sep=''))
+}
+
+class_to_flux <- function(c){     ## This fuction converts class to a particular flux
+    if (c == 'quiet'){return(1e-9)}
+    decade <- match(substr(c,1,1), goes_classes)-10
+    if (nchar(c) > 1) {sub <- as.double(substr(c, 2, nchar(c)))}
+    else{sub <- 1}
+    round((10^decade)*sub, 10)
+}
+
+
+
+
+```
+
+
+
+
+Data Analysis
+```{r}
+
+tr <- read.csv(file.path(base_path, "training", "meta_data.csv"))
+noaa_num <- array()
+for (id in tr$id){
+      noaa_num <- append(noaa_num,strsplit(gsub("_copy", '', id),'_',fixed=TRUE)[[1]][1])
+}
+
+tr <- cbind(tr, 'noaa_num' = noaa_num[2:length(noaa_num)])
+noaa_nums <- unique(tr$noaa_num)
+
+classes_samples <- list()
+for (pf in tr$peak_flux){
+  
+    classes_samples <- append(classes_samples, flux_to_class(pf, only_main = TRUE))
+  
+}
+
+
+
+max_classes_ARs <- list()
+for (i in noaa_nums){
+    max_classes_ARs <- append(max_classes_ARs, flux_to_class(select(subset(tr, noaa_num == i), peak_flux)[1,], only_main = TRUE))
+}
+
+counts_samples <- (data.frame(x = t(data.frame(c(classes_samples)))) %>% count(x))$n
+counts_ARs <- (data.frame(x = t(data.frame(c(max_classes_ARs)))) %>% count(x))$n
+classes <- c("B", "C", "M", "quiet", "X")
+
+data.frame(cbind('classes' = classes, 'samples' = counts_samples, "Unique ARs" = counts_ARs))
+
+
+## Here, we can see the classes and the number of samples in each class
+
+```
+
+
+Analyzing the degradation of Magnetogram sensor
+```{r}
+
+
+train_degrad <- subset(tr, peak_flux == 1e-9)
+train_degrad <- train_degrad[order(train_degrad$start),]
+dict_degrad <- hash()
+
+dict_degrad[["date"]] <- list()
+dict_degrad[["94"]] <- list()
+dict_degrad[["131"]] <- list()
+dict_degrad[["171"]] <- list()
+dict_degrad[["193"]] <- list()
+dict_degrad[["211"]] <- list()
+dict_degrad[["304"]] <- list()
+dict_degrad[["335"]] <- list()
+dict_degrad[["1700"]] <- list()
+dict_degrad[["continuum"]] <- list()
+dict_degrad[["magnetogram"]] <- list()
+
+
+wavelengths <- list(keys(dict_degrad))
+wavelengths[[1]][2:length(wavelengths[[1]])]
+
+wavelengths
+
+keys
+
+```
+
+
+
+
+
+
+
+
+
+Model evaluation statistics
+```{r}
+
+true_skill_statistic <- function(Y_val, Y_pred, threshold = 'M'){
+  
+  seperator <- class_to_flux(threshold)
+  a <- as.double(t(data.frame(Y_val)))
+  dim(a) <- c(length(Y_val), 1)
+  a <- data.frame(a)
+  b <- data.frame(Y_pred)
+  nrow(a)
+
+
+  c <- list()
+  d <- list()
+  for(yt in 1:nrow(a)){if (a[yt,] >=  seperator){c <- append(c,1)}else{c <- append(c, 0)}}
+  for(yp in 1:nrow(b)){if (b[yp,] >=  seperator){d <- append(d,1)}else{d <- append(d, 0)}}
+
+  e <- as.double(t(data.frame(c)))
+  dim(e) <- c(length(Y_val), 1)
+
+
+
+  f <- as.double(t(data.frame(d)))
+  dim(f) <- c(length(Y_val), 1)
+
+  f[1] <- 1
+  f[2] <- 0
+
+
+  conf <- confusionMatrix(table(as.factor(e), as.factor(f)))
+  tp <- conf$table[1, 1]
+  fn <- conf$table[1, 2]
+  fp <- conf$table[2, 1]
+  tn <- conf$table[2, 2]
+  
+  print(paste('Predicted', as.character(sum(f)), 'M+',',', as.character(length(f) -  sum(f)), '< M'))
+  
+  return((tp / (tp + fn)) - (fp / (fp + tn)))
+  
+  }
+
+
+
+
+heidke_skill_score <- function(Y_val, Y_pred, threshold = 'M'){
+  
+  seperator <- class_to_flux(threshold)
+  a <- as.double(t(data.frame(Y_val)))
+  dim(a) <- c(length(Y_val), 1)
+  a <- data.frame(a)
+  b <- data.frame(Y_pred)
+  nrow(a)
+
+
+  c <- list()
+  d <- list()
+  for(yt in 1:nrow(a)){if (a[yt,] >=  seperator){c <- append(c,1)}else{c <- append(c, 0)}}
+  for(yp in 1:nrow(b)){if (b[yp,] >=  seperator){d <- append(d,1)}else{d <- append(d, 0)}}
+
+  e <- as.double(t(data.frame(c)))
+  dim(e) <- c(length(Y_val), 1)
+
+
+
+  f <- as.double(t(data.frame(d)))
+  dim(f) <- c(length(Y_val), 1)
+
+  f[100] <- 1
+  f[101] <- 0
+
+
+  conf <- confusionMatrix(table(as.factor(e), as.factor(f)))
+  tp <- conf$table[1, 1]
+  fn <- conf$table[1, 2]
+  fp <- conf$table[2, 1]
+  tn <- conf$table[2, 2]
+  
+  print("heidke skill score is")
+  
+  return((tp + fn) / length(Y_pred) * (tp + fp) / length(Y_pred) + (tn + fn) / length(Y_pred) * (tn + fp) / length(Y_pred))
+  
+}
+
+
+
+```
+
+
+
+Analyzing dataset null and duplicate values
+```{r}
+
+df1 <- read_csv(file.path(base_path,"training", 'meta_data.csv'))
+noaa_num <- array()
+for (id in df1$id){
+      noaa_num <- append(noaa_num,strsplit(gsub("_copy", '', id),'_',fixed=TRUE)[[1]][1])
+}
+
+df1 <- cbind(df1, 'noaa_num' = noaa_num[2:length(noaa_num)])
+
+df1$start <- ymd_hms(df1$start)
+df1$end <- ymd_hms(df1$end)
+
+time_steps <- list(dhours(0),dhours(7*60/60),dhours((10*60+30)/60),dhours((11*60+50)/60))
+all_image_times <- list()
+for (t in time_steps){
+  new_df <- data.table::copy(select(df1, start, noaa_num))
+  new_df$start <- new_df$start + t
+  all_image_times <- append(all_image_times, new_df)
+}
+a <- cbind('start' = data.frame(all_image_times[1]), 'noaa_num' = data.frame(all_image_times[2]))
+b <- cbind('start' = data.frame(all_image_times[3]), 'noaa_num' = data.frame(all_image_times[4]))
+c <- cbind('start' = data.frame(all_image_times[5]), 'noaa_num' = data.frame(all_image_times[6]))
+d <- cbind('start' = data.frame(all_image_times[7]), 'noaa_num' = data.frame(all_image_times[8]))
+
+allimagetimes <- rbind(a, b, c, d)
+
+res <- allimagetimes %>% group_by(noaa_num, start) %>% count()
+
+print(paste(as.character(nrow(res %>% subset(n == 1))), "of", as.character(nrow(allimagetimes)), "images don't have a duplicate"))
+
+
+
+
+```
+
+
+
+
+Defining image dataset creation function
+```{r}
+create_simple_image_set <- function(phase) {
+  
+  id <- list()
+  label <- list()
+  img <- list()
+  
+  df  <- read.csv(file.path(base_path,phase,"meta_data.csv"))
+  for (row in 1:nrow(df)){
+    
+    ar_nr <- strsplit(gsub("_copy", '', df[row,][1][[1]]),'_',fixed=TRUE)[[1]][1]
+    p <- paste(strsplit(gsub("_copy", '', df[row,][1][[1]]),'_',fixed=TRUE)[[1]][2:length(strsplit(gsub("_copy", '', df[row,][1][[1]]),'_',fixed=TRUE)[[1]])], collapse = '_')
+    img_path = file.path(base_path, phase, ar_nr, p)
+    
+    for (img_name in list.files(img_path)){
+      
+      if (endsWith(img_name, "_magnetogram.jpg")){
+        
+        id <- append(id,paste(df[row,][1],"-",strsplit(img_name, "__")[[1]][1], sep = ''))
+        label <- append(label,df[row,]$peak_flux)
+        im <- load.image(file.path(img_path, img_name))
+        im <- imsub(im,x %inr% c(44,212), y %inr% c(44,212))
+        im <- resize(im, 28, 28)
+        im <- as.matrix(im)
+        dim(im) <- c(28,28,1)
+        img <- append(img, list(im))
+        
+      }
+    }
+  }
+  return(data.frame('id' = as.matrix(id), 'label'  = as.matrix(label), 'img'  = as.matrix(img)))
+}
+
+
+
+
+
+```
+
+
+Creating train and test datasets
+```{r}
+
+train <- create_simple_image_set("training")
+test <- create_simple_image_set("test")
+
+
+```
+
+
+
+```{r}
+
+Y_train <- train$label
+X_train <- train$img
+myarray <- array(NA, c(nrow(train), 28, 28, 1))
+for (i in 1:nrow(train)){myarray[i,,,]  <- X_train[[i]]}
+X_train <- myarray
+
+```
+
+
+
+```{r}
+Y_val <- test$label
+X_val <- test$img
+testarray <- array(NA, c(nrow(test), 28, 28, 1))
+for (i in 1:nrow(test)){testarray[i,,,]  <- X_val[[i]]}
+X_val <- testarray
+
+
+```
+
+
+Plotting a sample training dataset image
+```{r}
+
+
+plot(as.cimg(X_train[1156,,,]))
+
+
+```
+
+
+
+Fixed point Model
+```{r}
+
+
+train1 <- read_csv(file.path(base_path,"training", 'meta_data.csv'))
+test1 <- read_csv(file.path(base_path,"test", 'meta_data.csv'))
+
+predict_val <- 5.29411764705883E-07
+
+print(paste("Mean absolute error for train is",as.character(mean(train1$peak_flux - predict_val))))
+print(paste("Mean absolute error for test is",as.character(mean(test1$peak_flux - predict_val))))
+
+
+
+
+print(paste("True skill statistic is", true_skill_statistic(test1$peak_flux, rep(predict_val, nrow(test1)))))
+print(paste("Heidke skill score is", heidke_skill_score(test1$peak_flux, rep(predict_val, nrow(test1)))))
+
+```
+
+
+
+Creating the Neural Network Model
+```{r}
+model <- keras_model_sequential()
+
+
+model %>%
+
+layer_conv_2d (filters = 32, kernel_size = c(5,5), padding = "same", input_shape = c(28, 28, 1)) %>%
+  
+layer_activation("relu") %>%
+
+layer_conv_2d (filters = 32, kernel_size = c(5,5), padding = "same") %>%
+  
+layer_activation("relu") %>%
+
+layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+
+layer_dropout(rate = 0.25) %>%
+
+layer_conv_2d (filters = 64, kernel_size = c(3,3), padding = "same") %>%
+  
+layer_activation("relu") %>%
+
+layer_conv_2d (filters = 64, kernel_size = c(3,3), padding = "same") %>%
+  
+layer_activation("relu") %>%
+
+layer_max_pooling_2d(pool_size = c(2, 2), strides = c(2, 2)) %>%
+
+layer_dropout(rate = 0.25) %>%
+
+layer_flatten() %>%
+
+layer_dense(units = 1) %>%
+  
+layer_activation("relu") %>%
+
+layer_dropout(rate = 0.5) %>%
+
+layer_dense(units = 1, kernel_initializer = 'ones') %>%
+  
+layer_activation("relu") %>%
+  
+layer_dense(units = 1, activation = 'linear')
+
+opt <- optimizer_adam()
+
+model %>% compile(
+  optimizer = opt,
+  loss = 'mean_absolute_error')
+
+
+
+
+
+learning_rate_reduction <- callback_reduce_lr_on_plateau(monitor='loss', patience=4, min_delta=1e-8, verbose=1, factor=0.5, min_lr=0.000000001)
+
+
+batch_size <- 64
+
+
+datagen <- image_data_generator(featurewise_center = FALSE,  samplewise_center = FALSE,  featurewise_std_normalization = FALSE,  samplewise_std_normalization = FALSE,  zca_whitening = FALSE,  
+        rotation_range = 0.0,  zoom_range = 0.0, width_shift_range = 0.1,  height_shift_range = 0.1, horizontal_flip = TRUE, vertical_flip = TRUE)
+
+train_image_array_gen <- flow_images_from_data(x = X_train, y = Y_train, datagen, batch_size = batch_size)
+val_image_array_gen <- flow_images_from_data(x = X_val, y = Y_val, datagen, batch_size = batch_size)
+
+
+```
+
+
+Fitting the model
+```{r}
+
+
+history <- model %>% fit_generator(train_image_array_gen, epochs = 50, validation_data = val_image_array_gen, validation_steps = as.integer(nrow(X_val) / batch_size), verbose = 2, steps_per_epoch = nrow(X_train)%/%batch_size, callbacks = c(learning_rate_reduction))
+
+
+
+
+```
+
+
+```{r}
+
+plot(history ,smooth = TRUE)
+
+
+```
+
+
+```{r}
+
+require(reshape2)
+val_data <- do.call(cbind, list(history$metrics$val_loss))
+val_data <- melt(val_data)
+
+
+tr_data <- do.call(cbind, list(history$metrics$loss))
+tr_data <- melt(tr_data)
+
+a <- merge(tr_data, val_data, by = "Var1")
+
+ggplot(a, aes(x= Var1)) +
+  geom_line(aes(y = value.x, color = "Training Data"))+
+  scale_size_area() + 
+  xlab("epoch") +
+  ylab("loss") 
+
+```
+
+
+```{r}
+
+ggplot(a, aes(x= Var1)) +  
+  geom_line(aes(y = value.y, color= "Test Data")) +
+  scale_size_area() + 
+  xlab("epoch") +
+  ylab("loss") 
+
+```
+
+
+Summary of the model
+```{r}
+
+summary(model)
+
+```
+
+
+Evaluation of the model with Mean absolute error (MAE)
+```{r}
+model %>% evaluate(X_val, list(Y_val), verbose = 0)
+
+```
+
+
+Predict flux value with test data
+```{r}
+
+Y_pred <- predict(model, x = X_val)
+print(paste("Mean absolute error is",as.character(mean(as.double(Y_val) - Y_pred))))
+
+```
+
+```{r}
+
+print(paste("True skill statistic is", true_skill_statistic(test$peak_flux, list(Y_pred))))
+print(paste("Heidke skill score is", heidke_skill_score(test$peak_flux, list(Y_pred))))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
